@@ -11,15 +11,16 @@ EVENT_BUS_URL    = "https://events.rald.cloud"
 SUPABASE_URL     = "https://onxdcikfttdmnhofsuwo.supabase.co"
 PAYRALD_BANK_CODE = "035"
 
+# Custom domain — auto-provisions SSL cert (covers core.pay.rald.cloud as 3rd-level subdomain)
 [[routes]]
-pattern = "core.pay.rald.cloud/*"
-zone_name = "rald.cloud"
+pattern = "core.pay.rald.cloud"
+custom_domain = true
 
 [observability]
 enabled = true
 head_sampling_rate = 1
 
-# ── Secrets — wrangler secret put <KEY> ────────────────────────────────────────
+# ── Secrets — wrangler secret put <KEY> ─────────────────────────────────────────
 # SUPABASE_SERVICE_ROLE_KEY   — Supabase service role key
 # RALD_JWT_SECRET             — Shared HMAC-SHA256 key (same across org)
 # MACHINE_IDENTITY_SECRET     — Machine-to-machine shared secret
