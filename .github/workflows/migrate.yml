@@ -1,0 +1,48 @@
+name: Run DB Migration
+
+on:
+  workflow_dispatch:
+    inputs:
+      target:
+        description: 'Which migration to run'
+        required: true
+        default: 'all'
+        type: choice
+        options:
+          - all
+          - payrald-schema
+          - waitlist
+
+jobs:
+  migrate:
+    name: Execute SQL migrations on Supabase
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    env:
+      SUPABASE_PROJECT_REF: onxdcikfttdmnhofsuwo
+      SUPABASE_DB_HOST: db.onxdcikfttdmnhofsuwo.supabase.co
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Install pg client
+        run: npm install pg
+
+      - name: Run migrations
+        run: node migrate-runner.mjs
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+          MIGRATION_TARGET: ${{ github.event.inputs.target }}
+
+      - name: Verify waitlist table
+        run: node verify-migration.mjs
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
