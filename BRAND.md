@@ -1,17 +1,21 @@
-# PayRald — Brand & Color
+# PayRald Core
 
-**Identity:** NEON NAVY BLUE (Elite Fintech)
-**Atmosphere:** premium fintech, secure infrastructure, elite financial systems
+**Service:** `payrald-core`
+**Runtime:** Cloudflare Worker
+**Framework:** Hono
+**Database:** Supabase (shared org instance)
+**Deployed at:** `core.pay.rald.cloud`
 
-| Token | Value |
-|-------|-------|
-| Primary | `#0066FF` |
-| Accent | `#3385FF` |
-| Glow | `rgba(0,102,255,0.22)` |
-| Background | `#07111F` |
-| Background Deep | `#020913` |
+## Purpose
 
-**Gradient:** `linear-gradient(135deg, #3385FF, #0066FF, #0040CC)`
-**Design cues:** neon blue edge glows, payment flow visualizations, premium glassmorphism
-**Category:** Payments
+Authoritative payment engine for the PayRald product.
 
+- Resolves aliases via ALIA (`routing.rald.cloud/resolve`)
+- Executes payouts via Squad Co
+- Processes Squad webhooks (top-ups, payout confirmations, failures)
+- Publishes payment events to `events.rald.cloud`
+- Owns `payrald_*` tables in Supabase
+
+## Part of the RALD Ecosystem
+
+Operated by **LILCKY STUDIO LIMITED**

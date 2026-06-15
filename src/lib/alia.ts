@@ -1,5 +1,5 @@
-// RALD PayRald Core — ALIA Resolution client
-// Calls routing.rald.cloud/resolve with the user's RALD JWT.
+// RALD PayRald Core — ALIA Resolution client v1.1.0
+// Calls routing.rald.cloud for all alias, merchant, and internal resolution.
 // rald-routing handles: trust gate, consent check, machine JWT minting, audit.
 // LILCKY STUDIO LIMITED
 
@@ -10,9 +10,21 @@ export interface AliasResolution {
     destinationBankName: string;
     accountName:         string;
     institutionType:     string;
+    isInternal:          boolean;
   };
   resolvedAt:  string;
   latency_ms?: number;
+}
+
+export interface MerchantResolution {
+  merchantId:      string;
+  merchantAlias:   string;
+  displayName:     string;
+  merchantType:    string;
+  settlementType:  "internal" | "bank" | "squad";
+  settlementRef?:  string;
+  trustScore:      number;
+  latency_ms?:     number;
 }
 
 export class AliasResolutionError extends Error {
@@ -26,19 +38,25 @@ export class AliasResolutionError extends Error {
   }
 }
 
+type RoutingEnv = { ROUTING_URL?: string };
+
+function routingBase(env: RoutingEnv) {
+  return (env.ROUTING_URL ?? "https://routing.rald.cloud").replace(/\/$/, "");
+}
+
 /**
- * Resolve alias → bank routing via routing.rald.cloud (user-JWT pass-through).
- * rald-routing validates trust_score ≥ 10 and mints the machine JWT for us.
+ * Resolve a user/email/phone alias → bank routing.
+ * rald-routing validates trust_score ≥ 10 and mints the machine JWT.
  */
 export async function resolveAliasViaRouting(p: {
-  alias:           string;
-  userJwt:         string;
-  transactionRef:  string;
-  currency?:       string;
-  amount?:         number;
-  routingUrl?:     string;
+  alias:          string;
+  userJwt:        string;
+  transactionRef: string;
+  currency?:      string;
+  amount?:        number;
+  env:            RoutingEnv;
 }): Promise<AliasResolution> {
-  const url = (p.routingUrl ?? "https://routing.rald.cloud").replace(/\/$/, "");
+  const url = routingBase(p.env);
   const res = await fetch(`${url}/resolve`, {
     method: "POST",
     headers: {
@@ -55,18 +73,10 @@ export async function resolveAliasViaRouting(p: {
   });
 
   const body = await res.json().catch(() => ({})) as Record<string, unknown>;
-
-  if (!res.ok) {
-    throw new AliasResolutionError(
-      p.alias,
-      (body.code as string) ?? "RESOLUTION_FAILED",
-      res.status
-    );
-  }
+  if (!res.ok) throw new AliasResolutionError(p.alias, (body.code as string) ?? "RESOLUTION_FAILED", res.status);
 
   const data = body as {
-    ok:      boolean;
-    routing: { token: string; institution_id: string; institution_name: string; institution_type: string };
+    routing: { token: string; institution_id: string; institution_name: string; institution_type: string; is_internal?: boolean };
     subject: { display_name: string | null };
     alias:   { value: string };
     latency_ms?: number;
@@ -79,6 +89,7 @@ export async function resolveAliasViaRouting(p: {
       destinationBankName: data.routing.institution_name,
       accountName:         data.subject.display_name ?? data.alias.value,
       institutionType:     data.routing.institution_type ?? "commercial_bank",
+      isInternal:          data.routing.is_internal === true,
     },
     resolvedAt:  new Date().toISOString(),
     latency_ms:  data.latency_ms,
@@ -86,13 +97,59 @@ export async function resolveAliasViaRouting(p: {
 }
 
 /**
+ * Resolve a merchant alias (@spotify, @netflix, @school, etc.).
+ * Falls back gracefully if rald-routing merchant endpoint is unavailable.
+ */
+export async function resolveMerchantViaRouting(p: {
+  merchantAlias:  string;
+  userJwt:        string;
+  transactionRef: string;
+  amount?:        number;
+  env:            RoutingEnv;
+}): Promise<MerchantResolution | null> {
+  const url     = routingBase(p.env);
+  const alias   = p.merchantAlias.startsWith("@") ? p.merchantAlias : `@${p.merchantAlias}`;
+  try {
+    const res = await fetch(`${url}/resolve/merchant`, {
+      method: "POST",
+      headers: {
+        "Content-Type":      "application/json",
+        "Authorization":     `Bearer ${p.userJwt}`,
+        "X-Source-Service":  "payrald-core",
+        "X-Transaction-Ref": p.transactionRef,
+      },
+      body: JSON.stringify({ alias, ...(p.amount ? { amount: p.amount } : {}) }),
+    });
+    if (!res.ok) return null;
+    const data = await res.json() as {
+      merchant_id:   string;
+      alias:         string;
+      display_name:  string;
+      merchant_type: string;
+      settlement:    { type: "internal" | "bank" | "squad"; ref?: string };
+      trust_score:   number;
+      latency_ms?:   number;
+    };
+    return {
+      merchantId:     data.merchant_id,
+      merchantAlias:  data.alias,
+      displayName:    data.display_name,
+      merchantType:   data.merchant_type,
+      settlementType: data.settlement.type,
+      settlementRef:  data.settlement.ref,
+      trustScore:     data.trust_score,
+      latency_ms:     data.latency_ms,
+    };
+  } catch { return null; }
+}
+
+/**
  * Preview alias — public, no auth required.
- * Returns display_name + verified flag without a routing token.
  */
 export async function previewAlias(p: {
-  alias: string; routingUrl?: string;
-}): Promise<{ exists: boolean; display_name: string | null; verified: boolean } | null> {
-  const url = (p.routingUrl ?? "https://routing.rald.cloud").replace(/\/$/, "");
+  alias: string; env: RoutingEnv;
+}): Promise<{ exists: boolean; display_name: string | null; alias_type: string | null; verified: boolean; entity_type: string } | null> {
+  const url = routingBase(p.env);
   try {
     const res = await fetch(`${url}/resolve/preview`, {
       method: "POST",
@@ -100,7 +157,7 @@ export async function previewAlias(p: {
       body: JSON.stringify({ alias: p.alias }),
     });
     if (!res.ok) return null;
-    const d = await res.json() as { exists: boolean; display_name?: string | null; verified: boolean };
-    return { exists: d.exists, display_name: d.display_name ?? null, verified: d.verified };
+    const d = await res.json() as { exists: boolean; display_name?: string | null; alias_type?: string; verified: boolean; entity_type?: string };
+    return { exists: d.exists, display_name: d.display_name ?? null, alias_type: d.alias_type ?? null, verified: d.verified, entity_type: d.entity_type ?? "user" };
   } catch { return null; }
 }

@@ -11,6 +11,9 @@ import { requestLogger }             from "./lib/logger";
 import healthRoutes                  from "./routes/health";
 import transfersRoutes               from "./routes/transfers";
 import withdrawalsRoutes             from "./routes/withdrawals";
+import paymentsRoutes                from "./routes/payments";
+import vouchersRoutes                from "./routes/vouchers";
+import settlementsRoutes             from "./routes/settlements";
 import webhooksRoutes                from "./routes/webhooks";
 
 export type Bindings = {
@@ -80,6 +83,9 @@ app.use("*", async (c, next) => {
 app.route("/v1", healthRoutes);
 app.route("/",   transfersRoutes);
 app.route("/",   withdrawalsRoutes);
+app.route("/",   paymentsRoutes);
+app.route("/",   vouchersRoutes);
+app.route("/",   settlementsRoutes);
 app.route("/",   webhooksRoutes);
 
 app.notFound((c) => c.json({ error: "Not found", path: c.req.path }, 404));
