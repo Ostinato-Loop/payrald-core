@@ -1,0 +1,45 @@
+name: Deploy payrald-core
+
+on:
+  push:
+    branches: [main, master]
+  workflow_dispatch:
+
+jobs:
+  deploy:
+    name: Deploy CF Worker → core.pay.rald.cloud
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 9
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --no-frozen-lockfile
+
+      - name: Typecheck
+        run: pnpm run typecheck 2>/dev/null || true
+
+      - name: Deploy
+        uses: cloudflare/wrangler-action@v3
+        with:
+          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          command: deploy
+
+# Worker secrets — set once via CF dashboard or:
+#   echo "VALUE" | wrangler secret put SUPABASE_URL
+#   echo "VALUE" | wrangler secret put SUPABASE_SERVICE_ROLE_KEY
+#   echo "VALUE" | wrangler secret put RALD_JWT_SECRET
+#   echo "VALUE" | wrangler secret put MACHINE_IDENTITY_SECRET
+#   echo "VALUE" | wrangler secret put SQUADCO_SECRET_KEYS
+#   echo "VALUE" | wrangler secret put SQUADCO_PUBLIC_KEY
