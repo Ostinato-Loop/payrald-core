@@ -17,7 +17,7 @@ jobs:
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: '20'
+          node-version: '22'
 
       - name: Install dependencies
         run: npm install
@@ -25,12 +25,47 @@ jobs:
       - name: Typecheck
         run: npm run typecheck 2>/dev/null || true
 
-      - name: Deploy
+      - name: Deploy Worker
         uses: cloudflare/wrangler-action@v3
         with:
           apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
           command: deploy
+
+      - name: Ensure core.pay.rald.cloud DNS record exists
+        env:
+          CF_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CF_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: |
+          # Get the rald.cloud zone ID
+          ZONE_ID=$(curl -s -H "Authorization: Bearer $CF_API_TOKEN" \
+            "https://api.cloudflare.com/client/v4/zones?name=rald.cloud" \
+            | jq -r '.result[0].id')
+          echo "Zone ID: $ZONE_ID"
+
+          # Check if core.pay.rald.cloud DNS record exists
+          EXISTING=$(curl -s -H "Authorization: Bearer $CF_API_TOKEN" \
+            "https://api.cloudflare.com/client/v4/zones/$ZONE_ID/dns_records?name=core.pay.rald.cloud" \
+            | jq -r '.result | length')
+          echo "Existing records: $EXISTING"
+
+          if [ "$EXISTING" = "0" ]; then
+            echo "Creating DNS record for core.pay.rald.cloud..."
+            curl -s -X POST \
+              -H "Authorization: Bearer $CF_API_TOKEN" \
+              -H "Content-Type: application/json" \
+              "https://api.cloudflare.com/client/v4/zones/$ZONE_ID/dns_records" \
+              -d '{
+                "type": "AAAA",
+                "name": "core.pay.rald.cloud",
+                "content": "100::",
+                "proxied": true,
+                "comment": "Worker route for payrald-core — auto-created by CI"
+              }' | jq -r '.success'
+            echo "DNS record created."
+          else
+            echo "DNS record already exists, skipping."
+          fi
 
 # Worker secrets — set once via CF dashboard or wrangler CLI:
 #   echo "VALUE" | wrangler secret put SUPABASE_SERVICE_ROLE_KEY
