@@ -14,20 +14,16 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - uses: pnpm/action-setup@v4
-        with:
-          version: 9
-
-      - uses: actions/setup-node@v4
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
         with:
           node-version: '20'
-          cache: pnpm
 
       - name: Install dependencies
-        run: pnpm install --no-frozen-lockfile
+        run: npm install
 
       - name: Typecheck
-        run: pnpm run typecheck 2>/dev/null || true
+        run: npm run typecheck 2>/dev/null || true
 
       - name: Deploy
         uses: cloudflare/wrangler-action@v3
@@ -36,8 +32,7 @@ jobs:
           accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
           command: deploy
 
-# Worker secrets — set once via CF dashboard or:
-#   echo "VALUE" | wrangler secret put SUPABASE_URL
+# Worker secrets — set once via CF dashboard or wrangler CLI:
 #   echo "VALUE" | wrangler secret put SUPABASE_SERVICE_ROLE_KEY
 #   echo "VALUE" | wrangler secret put RALD_JWT_SECRET
 #   echo "VALUE" | wrangler secret put MACHINE_IDENTITY_SECRET
