@@ -25,7 +25,7 @@ jobs:
 
       - name: Setup Node.js
         if: steps.pkg_check.outputs.has_pkg == 'true'
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v6
         with:
           node-version: '20'
 
