@@ -31,7 +31,7 @@ jobs:
 
       - name: Setup pnpm
         if: steps.pkg_check.outputs.has_pkg == 'true'
-        uses: pnpm/action-setup@v4
+        uses: pnpm/action-setup@v6
         with:
           version: 9
 
