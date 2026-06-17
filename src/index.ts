@@ -15,6 +15,7 @@ import paymentsRoutes                from "./routes/payments";
 import vouchersRoutes                from "./routes/vouchers";
 import settlementsRoutes             from "./routes/settlements";
 import webhooksRoutes                from "./routes/webhooks";
+import walletsRoutes                 from "./routes/wallets";
 
 export type Bindings = {
   SUPABASE_URL:              string;
@@ -39,7 +40,7 @@ export type Variables = {
 const app = new Hono<{ Bindings: Bindings; Variables: Variables }>();
 
 // Health — before all middleware
-app.get("/health",  (c) => c.json({ status: "ok", service: "payrald-core", version: "1.0.0", environment: c.env.ENVIRONMENT ?? "production", timestamp: new Date().toISOString() }));
+app.get("/health",  (c) => c.json({ status: "ok", service: "payrald-core", version: "1.1.0", environment: c.env.ENVIRONMENT ?? "production", timestamp: new Date().toISOString() }));
 app.get("/healthz", (c) => c.json({ status: "ok" }));
 
 // Security headers
@@ -87,6 +88,7 @@ app.route("/",   paymentsRoutes);
 app.route("/",   vouchersRoutes);
 app.route("/",   settlementsRoutes);
 app.route("/",   webhooksRoutes);
+app.route("/",   walletsRoutes);
 
 app.notFound((c) => c.json({ error: "Not found", path: c.req.path }, 404));
 app.onError((err, c) => {
