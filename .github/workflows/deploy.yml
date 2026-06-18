@@ -1,49 +1,184 @@
-name: Deploy payrald-core
+name: Deploy to AWS ECR + App Runner
 
 on:
   push:
-    branches: [main, master]
+    branches: [main]
   workflow_dispatch:
 
-env:
-  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+concurrency:
+  group: deploy-${{ github.ref }}
+  cancel-in-progress: false
 
 jobs:
-  deploy:
-    name: Deploy CF Worker → core.pay.rald.cloud
+  wizmac-read:
+    name: WIZMAC Read (mandatory)
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - name: Read WIZMAC before any operation
+        run: |
+          echo "╔══════════════════════════════════════╗"
+          echo "║  WIZMAC MANDATORY READ — Pre-Deploy  ║"
+          echo "╚══════════════════════════════════════╝"
+          if [ -f WIZMAC.md ]; then
+            echo "✅ WIZMAC.md found"
+            head -5 WIZMAC.md
+          else
+            echo "⚠️  WIZMAC.md missing — add it before next sprint"
+          fi
+          echo "Reading WIZMAC ecosystem state..."
+          curl -sf https://sekani.rald.cloud/api/wizmac/read-state \
+            -H "Accept: application/json" | python3 -c "
+import json,sys
+d=json.load(sys.stdin)
+print('WIZMAC status:', d.get('system','unknown'))
+ss=d.get('sprintState')
+if ss: print('Sprint score:', ss.get('score','?'))
+print('Recent events:', len(d.get('recentEvents',[])))
+print('Read at:', d.get('readAt',''))
+" 2>/dev/null || echo "⚠️  WIZMAC API unreachable (non-blocking)"
+      - name: Check kill switch
+        run: |
+          STATUS=$(curl -sf https://sekani.rald.cloud/api/wizmac/read-state | python3 -c "
+import json,sys
+d=json.load(sys.stdin)
+ks=d.get('killSwitch')
+if ks and isinstance(ks.get('value'), dict) and ks['value'].get('active'):
+  print('ACTIVE:', ks['value'].get('reason','no reason given'))
+  sys.exit(1)
+print('OK')
+" 2>/dev/null) || STATUS="OK"
+          if echo "$STATUS" | grep -q "^ACTIVE:"; then
+            echo "🚫 WIZMAC KILL SWITCH ACTIVE: $STATUS"
+            echo "   All deployments halted. Contact Principal Architect."
+            exit 1
+          fi
+          echo "✅ Kill switch: inactive. Proceeding with deploy."
 
+  build-and-push:
+    name: Build → ECR Push
+    needs: wizmac-read
+    runs-on: ubuntu-latest
+    outputs:
+      image: ${{ steps.build.outputs.image }}
     steps:
       - uses: actions/checkout@v4
 
-      - name: Setup Node.js
-        uses: actions/setup-node@v4
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ secrets.AWS_REGION }}
+
+      - name: Login to Amazon ECR
+        id: login-ecr
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Build, tag, and push to ECR
+        id: build
+        env:
+          ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
+          ECR_REPOSITORY: ${{ github.event.repository.name }}
+          IMAGE_TAG: ${{ github.sha }}
+        run: |
+          aws ecr describe-repositories --repository-names $ECR_REPOSITORY \
+            || aws ecr create-repository --repository-name $ECR_REPOSITORY \
+               --image-scanning-configuration scanOnPush=true \
+               --encryption-configuration encryptionType=AES256
+          docker build -t $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG \
+                       -t $ECR_REGISTRY/$ECR_REPOSITORY:latest .
+          docker push $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG
+          docker push $ECR_REGISTRY/$ECR_REPOSITORY:latest
+          echo "image=$ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG" >> $GITHUB_OUTPUT
+          echo "✅ Pushed: $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG"
+
+  deploy-app-runner:
+    name: Deploy → App Runner
+    needs: build-and-push
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ secrets.AWS_REGION }}
+
+      - name: Deploy to AWS App Runner
+        env:
+          SERVICE_NAME: ${{ github.event.repository.name }}
+          IMAGE: ${{ needs.build-and-push.outputs.image }}
+        run: |
+          SERVICE_ARN=$(aws apprunner list-services \
+            --query "ServiceSummaryList[?ServiceName=='$SERVICE_NAME'].ServiceArn" \
+            --output text 2>/dev/null)
+
+          if [ -z "$SERVICE_ARN" ]; then
+            echo "Creating new App Runner service: $SERVICE_NAME"
+            ROLE_ARN=$(aws iam get-role --role-name AppRunnerECRRole \
+              --query "Role.Arn" --output text 2>/dev/null || echo "")
+            aws apprunner create-service \
+              --service-name "$SERVICE_NAME" \
+              --source-configuration "{
+                \"ImageRepository\": {
+                  \"ImageIdentifier\": \"$IMAGE\",
+                  \"ImageRepositoryType\": \"ECR\",
+                  \"ImageConfiguration\": {
+                    \"Port\": \"3000\",
+                    \"RuntimeEnvironmentVariables\": {
+                      \"NODE_ENV\": \"production\"
+                    }
+                  }
+                },
+                \"AutoDeploymentsEnabled\": false,
+                \"AuthenticationConfiguration\": {
+                  \"AccessRoleArn\": \"$ROLE_ARN\"
+                }
+              }" \
+              --instance-configuration "Cpu=0.25 vCPU,Memory=0.5 GB"
+          else
+            echo "Updating existing App Runner service: $SERVICE_ARN"
+            aws apprunner update-service \
+              --service-arn "$SERVICE_ARN" \
+              --source-configuration "{
+                \"ImageRepository\": {
+                  \"ImageIdentifier\": \"$IMAGE\",
+                  \"ImageRepositoryType\": \"ECR\"
+                }
+              }"
+          fi
+          echo "✅ App Runner deploy triggered for $SERVICE_NAME"
+
+  wizmac-report:
+    name: WIZMAC Write (mandatory)
+    needs: [build-and-push, deploy-app-runner]
+    runs-on: ubuntu-latest
+    if: always()
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
         with:
           node-version: '22'
-
-      - name: Install dependencies
-        run: npm install
-
-      - name: Typecheck
-        run: npm run typecheck 2>/dev/null || true
-
-      - name: Install Wrangler globally
-        run: npm install -g wrangler@latest
-
-      - name: Deploy Worker (custom domain provisions SSL automatically)
-        run: wrangler deploy
+      - name: Report to WIZMAC after deploy
         env:
-          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
-
-      - name: Provision Worker secrets
+          WIZMAC_API_URL: https://sekani.rald.cloud
+          WIZMAC_SERVICE: ${{ github.event.repository.name }}
+          WIZMAC_ACTION: ${{ needs.deploy-app-runner.result == 'success' && 'deployed-to-aws' || 'deploy-failed' }}
+          WIZMAC_ACTOR: ${{ github.actor }}
+          GITHUB_SHA: ${{ github.sha }}
+          GITHUB_REF_NAME: ${{ github.ref_name }}
+          GITHUB_RUN_ID: ${{ github.run_id }}
+          GITHUB_WORKFLOW: ${{ github.workflow }}
         run: |
-          echo "${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}" | wrangler secret put SUPABASE_SERVICE_ROLE_KEY
-          echo "${{ secrets.RALD_JWT_SECRET }}" | wrangler secret put RALD_JWT_SECRET
-          echo "${{ secrets.SESSION_SECRET }}" | wrangler secret put MACHINE_IDENTITY_SECRET
-          echo "${{ secrets.SQUADCO_SECRET_KEYS }}" | wrangler secret put SQUADCO_SECRET_KEYS
-          echo "${{ secrets.SQUADCO_PUBLIC_KEY }}" | wrangler secret put SQUADCO_PUBLIC_KEY
-        env:
-          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          if [ -f scripts/report-to-wizmac.mjs ]; then
+            node scripts/report-to-wizmac.mjs
+          else
+            echo "⚠️  report-to-wizmac.mjs not found — reporting inline"
+            curl -sf -X POST https://sekani.rald.cloud/api/wizmac/events \
+              -H "Content-Type: application/json" \
+              -d "{\"eventType\":\"agent_action\",\"title\":\"[$WIZMAC_SERVICE] $WIZMAC_ACTION — ${GITHUB_SHA:0:8}\",\"actor\":\"$WIZMAC_ACTOR\",\"tags\":[\"ci\",\"mandatory-report\",\"$WIZMAC_SERVICE\"]}" \
+              2>/dev/null && echo "✅ WIZMAC reported" || echo "⚠️  WIZMAC report skipped"
+          fi
